@@ -1,0 +1,69 @@
+version: 2.1
+orbs:
+  aws-ecr: circleci/aws-ecr@6.3.0
+  aws-ecs: circleci/aws-ecs@0.0.11
+jobs:
+  build:
+    docker:
+      - image: circleci/node:12.9
+        environment:
+          PORT: 3000
+          DB_SECRETS: "{\"password\":\"testdbpass\",\"dbname\":\"testdb\",\"engine\":\"postgres\",\"port\":5432,\"host\":\"localhost\",\"username\":\"testdbuser\"}"
+      - image: circleci/postgres:9
+        environment:
+          POSTGRES_USER: testdbuser
+          POSTGRES_PASSWORD: testdbpass
+          POSTGRES_DB: testdb
+    steps:
+      - checkout
+      - restore_cache:
+          keys:
+            - v1-dependencies-{{ checksum "yarn.lock" }}
+            # fallback to using the latest cache if no exact match is found
+            - v1-dependencies-
+
+      - run: yarn
+
+      - save_cache:
+          paths:
+            - node_modules
+          key: v1-dependencies-{{ checksum "yarn.lock" }}
+
+      - run: yarn test
+
+      - run: yarn test:e2e
+workflows:
+  version: 2
+  build-and-deploy:
+    jobs:
+      - build:
+          filters:
+            tags:
+              only: /.*/
+      - aws-ecr/build-and-push-image:
+          filters:
+            tags:
+              only: /.*/
+            branches:
+              ignore: /.*/
+          requires:
+            - build
+          account-url: AWS_ACCOUNT_URL
+          aws-access-key-id: AWS_ACCESS_KEY_ID
+          aws-secret-access-key: AWS_SECRET_ACCESS_KEY
+          repo: '${AWS_RESOURCE_NAME_PREFIX}'
+          region: AWS_DEFAULT_REGION
+          tag: '${CIRCLE_TAG}'
+      - aws-ecs/deploy-service-update:
+          filters:
+            tags:
+              only: /.*/
+            branches:
+              ignore: /.*/
+          requires:
+            - aws-ecr/build-and-push-image
+          aws-region: ${AWS_DEFAULT_REGION}
+          family: "${AWS_ECS_TASK_FAMILY}"
+          cluster-name: "${AWS_ECS_CLUSTER_NAME}"
+          service-name: "${AWS_ECS_SERVICE_NAME}"
+          container-image-name-updates: "container=web,tag=${CIRCLE_TAG}"
